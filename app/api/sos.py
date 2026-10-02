@@ -1,9 +1,10 @@
 """
 FastAPI router for SOS endpoints.
 """
-from typing import List, Optional
+from typing import List
 import time
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -14,6 +15,7 @@ from app.schemas.sos import (
 from app.services import sos_service
 from app.websocket.manager import ws_manager
 from app.config import settings
+from app.auth import validate_token, require_subject, require_responder
 
 router = APIRouter(prefix="/api/v1/sos", tags=["SOS"])
 
@@ -24,7 +26,10 @@ def check_rate_limit(user_id: str):
     """
     Checks if the user has exceeded the maximum allowed SOS events per minute.
     """
-    now = time.time()
+    now = time.monotonic()
+    for key in list(_rate_limits):
+        if not _rate_limits[key] or now - _rate_limits[key][-1] >= 60:
+            del _rate_limits[key]
     if user_id not in _rate_limits:
         _rate_limits[user_id] = []
         
@@ -36,42 +41,34 @@ def check_rate_limit(user_id: str):
         
     _rate_limits[user_id].append(now)
 
-def validate_token(authorization: Optional[str] = Header(None)):
-    """
-    Validates JWT token for direct online SOS requests.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid or missing authentication token")
-    # In a real app we'd decode and verify the JWT here.
-    # For now, this is a placeholder check.
-    return True
-
 @router.post("", response_model=SOSResponse)
 async def create_sos(
     sos_data: SOSCreateRequest,
     db: AsyncSession = Depends(get_db),
-    authorization: Optional[str] = Header(None)
+    claims: dict = Depends(validate_token)
 ):
     """
     Submit a new SOS alert.
     """
-    # Validate token only if it's a direct online request (hop_count == 0)
     if sos_data.hop_count == 0:
-        validate_token(authorization)
-        
-    check_rate_limit(sos_data.user_id)
-    
+        require_subject(claims, sos_data.user_id)
+    elif "sos:relay" not in claims.get("scope", "").split():
+        raise HTTPException(403, "Relay permission required")
+    check_rate_limit(claims["sub"])
+
     return await sos_service.process_sos(db, sos_data, ws_manager)
 
 
 @router.post("/cancel", response_model=SOSResponse)
 async def cancel_sos(
     cancel_data: SOSCancelRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(validate_token)
 ):
     """
     Cancel an active SOS alert.
     """
+    require_subject(claims, cancel_data.user_id)
     return await sos_service.cancel_sos(db, cancel_data, ws_manager)
 
 
@@ -79,12 +76,14 @@ async def cancel_sos(
 async def get_active_sos(
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
-    radius_km: float = Query(50.0, gt=0),
-    db: AsyncSession = Depends(get_db)
+    radius_km: float = Query(50.0, gt=0, le=1000),
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(validate_token)
 ):
     """
     Get active SOS alerts within a specified radius.
     """
+    require_responder(claims)
     return await sos_service.get_active_sos_events(db, lat, lng, radius_km)
 
 
@@ -92,11 +91,14 @@ async def get_active_sos(
 async def acknowledge_sos(
     sos_id: str,
     user_id: str = Form(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(validate_token)
 ):
     """
     Acknowledge an SOS alert (dashboard user or responder).
     """
+    require_subject(claims, user_id)
+    require_responder(claims)
     return await sos_service.acknowledge_sos(db, sos_id, user_id, ws_manager)
 
 
@@ -104,11 +106,14 @@ async def acknowledge_sos(
 async def respond_to_sos(
     sos_id: str,
     user_id: str = Form(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(validate_token)
 ):
     """
     Mark that a responder is en route to the SOS location.
     """
+    require_subject(claims, user_id)
+    require_responder(claims)
     return await sos_service.respond_to_sos(db, sos_id, user_id, ws_manager)
 
 
@@ -117,11 +122,13 @@ async def upload_media(
     sos_id: str = Form(...),
     uploaded_by: str = Form(...),
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(validate_token)
 ):
     """
     Upload media attached to an SOS alert.
     """
+    require_subject(claims, uploaded_by)
     try:
         return await sos_service.save_media(db, sos_id, file, uploaded_by)
     except ValueError as e:
@@ -133,10 +140,41 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = Query(...)):
     """
     WebSocket endpoint for real-time SOS broadcasts.
     """
+    try:
+        claims = validate_token(websocket.headers.get("authorization"))
+        require_responder(claims)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await ws_manager.connect(websocket, client_id)
     try:
         while True:
             # Keep connection alive and listen for client messages if needed
-            data = await websocket.receive_text()
+            remaining = max(0, float(claims["exp"]) - time.time())
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+            except asyncio.TimeoutError:
+                await websocket.close(code=1008)
+                return
     except WebSocketDisconnect:
-        ws_manager.disconnect(client_id)
+        pass
+    finally:
+        ws_manager.disconnect(client_id, websocket)
+
+
+@router.get("/media/{attachment_id}")
+async def read_media(attachment_id: str, db: AsyncSession = Depends(get_db),
+                     claims: dict = Depends(validate_token)):
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from app.models.sos import MediaAttachment
+    attachment = await db.get(MediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment not found")
+    if claims["sub"] != attachment.uploaded_by:
+        require_responder(claims)
+    # IDs come from the database; never interpret client input as a filesystem path.
+    paths = list(Path("uploads").glob(f"{attachment.id}.*"))
+    if not paths:
+        raise HTTPException(404, "Media file not found")
+    return FileResponse(paths[0])

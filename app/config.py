@@ -11,8 +11,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/suraksha_sos"
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    JWT_SECRET_KEY: str = "super_secret_jwt_key_for_suraksha"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
+    JWT_ISSUER: str = "suraksha"
+    JWT_AUDIENCE: str = "suraksha-api"
+    AUTO_CREATE_TABLES: bool = False
     
     CORS_ORIGINS: List[str] = ["*"]
     

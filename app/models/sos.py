@@ -80,6 +80,7 @@ class SOSEvent(Base):
     cancellation_reason: Mapped[str] = mapped_column(Text, nullable=True)
     
     acknowledged_by: Mapped[list] = mapped_column(JSON, nullable=True)
+    responder_ids: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
     responders_en_route: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationship with MediaAttachment
@@ -105,3 +106,11 @@ class MediaAttachment(Base):
     uploaded_by: Mapped[str] = mapped_column(String, nullable=False)
 
     sos_event: Mapped["SOSEvent"] = relationship("SOSEvent", back_populates="attachments")
+
+
+class SOSCancellationRecord(Base):
+    """Tombstone prevents an in-flight relay from resurrecting a cancelled alert."""
+    __tablename__ = "sos_cancellations"
+    sos_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

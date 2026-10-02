@@ -1,9 +1,10 @@
 """
 Pydantic schemas for SOS module requests, responses and web sockets.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Any
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+from app.config import settings
 from app.models.sos import SOSType, MessageType, SOSStatus, DeliveryMethod
 
 class SOSLocationSchema(BaseModel):
@@ -22,24 +23,37 @@ class RelayNodeSchema(BaseModel):
     rssi: Optional[int] = None
 
 class SOSCreateRequest(BaseModel):
-    sos_id: str = Field(..., description="Client-generated unique ID to prevent duplicates")
-    user_id: str = Field(..., description="ID of the user triggering SOS")
-    user_name: str = Field(..., description="Name of the user")
+    sos_id: str = Field(..., min_length=1, max_length=128, description="Client-generated unique ID to prevent duplicates")
+    user_id: str = Field(..., min_length=1, max_length=128, description="ID of the user triggering SOS")
+    user_name: str = Field(..., min_length=1, max_length=200, description="Name of the user")
     user_phone: Optional[str] = Field(None, description="Phone number of the user")
     sos_type: SOSType = Field(..., description="Category of SOS")
     message_type: MessageType = Field(MessageType.SOS_ALERT, description="Type of SOS message")
     location: SOSLocationSchema = Field(..., description="Location of the SOS event")
     delivery_method: DeliveryMethod = Field(DeliveryMethod.DIRECT_ONLINE, description="Method of alert delivery")
     hop_count: int = Field(0, description="Number of hops (if relayed)", ge=0)
-    max_hops: int = Field(15, description="Maximum allowed hops")
-    relay_chain: Optional[List[RelayNodeSchema]] = Field(None, description="Details of relay nodes")
+    max_hops: int = Field(15, ge=0, le=15, description="Maximum allowed hops")
+    relay_chain: Optional[List[RelayNodeSchema]] = Field(None, max_length=15, description="Details of relay nodes")
     message: Optional[str] = Field(None, description="Optional text message")
     media_attachment_ids: Optional[List[str]] = Field(None, description="Attached media IDs")
     origin_device_id: Optional[str] = Field(None, description="Device ID of origin")
-    ttl_seconds: int = Field(3600, description="Time-to-live for the SOS event")
+    ttl_seconds: int = Field(3600, gt=0, le=3600, description="Time-to-live for the SOS event")
     client_timestamp: datetime = Field(..., description="Timestamp from client device")
 
+    @model_validator(mode="after")
+    def validate_limits(self):
+        if self.hop_count > min(self.max_hops, settings.SOS_MAX_HOP_COUNT):
+            raise ValueError("Maximum relay hop count exceeded")
+        if self.ttl_seconds > settings.SOS_TTL_SECONDS:
+            raise ValueError("TTL exceeds server limit")
+        if self.message_type != MessageType.SOS_ALERT:
+            raise ValueError("Use the cancellation endpoint for cancellations")
+        if self.client_timestamp.tzinfo is None:
+            raise ValueError("client_timestamp must include a timezone")
+        return self
+
     model_config = ConfigDict(
+        str_max_length=4096,
         json_schema_extra={
             "example": {
                 "sos_id": "uuid-1234-5678",
@@ -63,7 +77,7 @@ class SOSResponse(BaseModel):
     sos_id: str
     message: str
     is_duplicate: bool = False
-    server_timestamp: datetime = Field(default_factory=datetime.utcnow)
+    server_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class SOSEventResponse(BaseModel):
     id: str
@@ -85,6 +99,9 @@ class SOSEventResponse(BaseModel):
     distance_meters: Optional[float] = None
     acknowledged_by: Optional[List[str]] = None
     responders_en_route: int
+    max_hops: int = 15
+    ttl_seconds: int = 3600
+    origin_device_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

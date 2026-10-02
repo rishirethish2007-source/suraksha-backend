@@ -6,7 +6,6 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.sos import router as sos_router
 from app.config import settings
@@ -24,15 +23,15 @@ async def lifespan(app: FastAPI):
     # Ensure upload directory exists for media
     os.makedirs("uploads", exist_ok=True)
     
-    # Initialize Database Tables automatically (helpful for Docker PostGIS)
-    from app.db.database import engine, Base
-    import app.models.sos  # Import models so Base metadata is aware
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        
-    yield
-    logger.info("Shutting down Suraksha SOS Module Backend...")
-    # Any cleanup tasks can go here
+    from app.db.database import engine, create_tables
+    from app.websocket.manager import ws_manager
+    if settings.AUTO_CREATE_TABLES:
+        await create_tables()
+    try:
+        yield
+    finally:
+        await ws_manager.close()
+        await engine.dispose()
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -46,17 +45,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials="*" not in settings.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include API Routers
 app.include_router(sos_router)
-
-# Mount static files for media uploads
-os.makedirs("uploads", exist_ok=True)
-app.mount("/static", StaticFiles(directory="uploads"), name="static")
 
 @app.get("/health", tags=["Health"])
 async def health_check():
