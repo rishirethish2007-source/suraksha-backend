@@ -1,0 +1,107 @@
+"""
+SQLAlchemy database models for SOS and Media Attachment.
+"""
+import enum
+import uuid
+from datetime import datetime
+from sqlalchemy import String, Integer, Float, Text, DateTime, ForeignKey, func, Index, JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.db.database import Base
+
+class SOSType(str, enum.Enum):
+    MEDICAL = "MEDICAL"
+    FIRE = "FIRE"
+    FLOOD = "FLOOD"
+    EARTHQUAKE = "EARTHQUAKE"
+    VIOLENCE = "VIOLENCE"
+    STRUCTURAL_COLLAPSE = "STRUCTURAL_COLLAPSE"
+    OTHER = "OTHER"
+
+class MessageType(str, enum.Enum):
+    SOS_ALERT = "SOS_ALERT"
+    SOS_CANCEL = "SOS_CANCEL"
+    SOS_ACK = "SOS_ACK"
+
+class SOSStatus(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESPONDING = "RESPONDING"
+    RESOLVED = "RESOLVED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+
+class DeliveryMethod(str, enum.Enum):
+    DIRECT_ONLINE = "DIRECT_ONLINE"
+    BLE_RELAY = "BLE_RELAY"
+    OFFLINE_QUEUED = "OFFLINE_QUEUED"
+
+class FileType(str, enum.Enum):
+    IMAGE = "IMAGE"
+    AUDIO = "AUDIO"
+    VIDEO = "VIDEO"
+
+class SOSEvent(Base):
+    """
+    Model representing an SOS event.
+    """
+    __tablename__ = 'sos_events'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    sos_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    user_name: Mapped[str] = mapped_column(String, nullable=False)
+    user_phone: Mapped[str] = mapped_column(String, nullable=True)
+    sos_type: Mapped[str] = mapped_column(String, nullable=False)
+    message_type: Mapped[str] = mapped_column(String, nullable=False)
+    
+    latitude: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    altitude: Mapped[float] = mapped_column(Float, nullable=True)
+    location_accuracy: Mapped[float] = mapped_column(Float, nullable=True)
+    location_provider: Mapped[str] = mapped_column(String, nullable=True)
+    
+    status: Mapped[str] = mapped_column(String, default=SOSStatus.ACTIVE.value, nullable=False, index=True)
+    delivery_method: Mapped[str] = mapped_column(String, nullable=False)
+    
+    hop_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_hops: Mapped[int] = mapped_column(Integer, default=15)
+    relay_chain: Mapped[list] = mapped_column(JSON, nullable=True)
+    
+    message: Mapped[str] = mapped_column(Text, nullable=True)
+    media_attachment_ids: Mapped[list] = mapped_column(JSON, nullable=True)
+    origin_device_id: Mapped[str] = mapped_column(String, nullable=True)
+    
+    ttl_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    client_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, onupdate=func.now(), nullable=True)
+    cancelled_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    cancellation_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    
+    acknowledged_by: Mapped[list] = mapped_column(JSON, nullable=True)
+    responders_en_route: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationship with MediaAttachment
+    attachments: Mapped[list["MediaAttachment"]] = relationship("MediaAttachment", back_populates="sos_event", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index('idx_sos_status_created_at', 'status', 'created_at'),
+    )
+
+
+class MediaAttachment(Base):
+    """
+    Model representing media attached to an SOS event.
+    """
+    __tablename__ = 'media_attachments'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    sos_id: Mapped[str] = mapped_column(String, ForeignKey('sos_events.sos_id', ondelete='CASCADE'), nullable=False, index=True)
+    file_url: Mapped[str] = mapped_column(String, nullable=False)
+    file_type: Mapped[str] = mapped_column(String, nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    uploaded_by: Mapped[str] = mapped_column(String, nullable=False)
+
+    sos_event: Mapped["SOSEvent"] = relationship("SOSEvent", back_populates="attachments")
