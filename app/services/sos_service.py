@@ -8,11 +8,12 @@ import uuid
 import aiofiles
 import os
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func, literal_column
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import UploadFile, HTTPException
 from app.config import settings
+from app.models.sos import SOSOutbox
 
 from app.models.sos import SOSEvent, SOSStatus, MediaAttachment, SOSCancellationRecord
 from app.schemas.sos import (
@@ -102,6 +103,7 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     )
 
     db.add(new_sos)
+    await stage_broadcast(db, new_sos, "new_sos")
     try:
         await db.commit()
     except IntegrityError:
@@ -116,7 +118,7 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     response_obj = _convert_to_response(new_sos)
     
     # 4. Broadcast via WebSocket
-    await ws_manager.broadcast_sos(WebSocketSOSMessage(type="new_sos", data=response_obj))
+    await notify_local(ws_manager, WebSocketSOSMessage(type="new_sos", data=response_obj))
 
     return SOSResponse(
         success=True,
@@ -164,12 +166,13 @@ async def cancel_sos(db: AsyncSession, cancel_data: SOSCancelRequest, ws_manager
     sos_event.cancelled_at = datetime.now(timezone.utc).replace(tzinfo=None)
     sos_event.cancellation_reason = cancel_data.reason
 
+    await stage_broadcast(db, sos_event, "sos_cancel" if sos_event.status == SOSStatus.CANCELLED.value else "sos_update")
     await db.commit()
     await db.refresh(sos_event)
     
     # Broadcast cancellation
     response_obj = _convert_to_response(sos_event)
-    await ws_manager.broadcast_sos(WebSocketSOSMessage(type="sos_cancel", data=response_obj))
+    await notify_local(ws_manager, WebSocketSOSMessage(type="sos_cancel", data=response_obj))
 
     return SOSResponse(success=True, sos_id=sos_event.sos_id, message="SOS cancelled successfully")
 
@@ -178,6 +181,17 @@ async def get_active_sos_events(db: AsyncSession, lat: float, lng: float, radius
     """
     Fetch unexpired active alerts and filter by great-circle distance.
     """
+    if db.bind.dialect.name == "postgresql":
+        point = func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326).cast(__import__('geoalchemy2').Geography())
+        geography = literal_column("sos_events.location")
+        distance = func.ST_Distance(geography, point)
+        stmt = select(SOSEvent, distance.label("distance")).where(
+            SOSEvent.status.in_([SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value, SOSStatus.RESPONDING.value]),
+            func.ST_DWithin(geography, point, radius_km * 1000),
+            func.extract("epoch", func.timezone('UTC', func.now()) - SOSEvent.client_timestamp) < SOSEvent.ttl_seconds,
+        ).order_by(distance)
+        return [_convert_to_response(event, dist) for event, dist in (await db.execute(stmt)).all()]
+    # SQLite is only a unit-test fallback; production uses the indexed query above.
     stmt = select(SOSEvent).where(SOSEvent.status.in_([SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value, SOSStatus.RESPONDING.value]))
     result = await db.execute(stmt)
     rows = result.scalars().all()
@@ -220,12 +234,13 @@ async def acknowledge_sos(db: AsyncSession, sos_id: str, user_id: str, ws_manage
         if sos_event.status == SOSStatus.ACTIVE.value:
             sos_event.status = SOSStatus.ACKNOWLEDGED.value
             
+        await stage_broadcast(db, sos_event, "sos_update")
         await db.commit()
         await db.refresh(sos_event)
         
         # Broadcast update
         response_obj = _convert_to_response(sos_event)
-        await ws_manager.broadcast_sos(WebSocketSOSMessage(type="sos_update", data=response_obj))
+        await notify_local(ws_manager, WebSocketSOSMessage(type="sos_update", data=response_obj))
 
     return SOSResponse(success=True, sos_id=sos_id, message="SOS acknowledged")
 
@@ -247,12 +262,13 @@ async def respond_to_sos(db: AsyncSession, sos_id: str, user_id: str, ws_manager
     if sos_event.status in [SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value]:
         sos_event.status = SOSStatus.RESPONDING.value
         
+    await stage_broadcast(db, sos_event, "sos_cancel" if sos_event.status == SOSStatus.CANCELLED.value else "sos_update")
     await db.commit()
     await db.refresh(sos_event)
     
     # Broadcast update
     response_obj = _convert_to_response(sos_event)
-    await ws_manager.broadcast_sos(WebSocketSOSMessage(type="sos_update", data=response_obj))
+    await notify_local(ws_manager, WebSocketSOSMessage(type="sos_update", data=response_obj))
 
     return SOSResponse(success=True, sos_id=sos_id, message="Responder en route marked")
 
@@ -323,3 +339,14 @@ def ensure_active(event):
 async def lock_sos(db, sos_id):
     if db.bind.dialect.name == "postgresql":
         await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:sos_id, 0))"), {"sos_id": sos_id})
+
+
+async def stage_broadcast(db, event, kind):
+    if settings.REDIS_ENABLED:
+        await db.flush()
+        await db.refresh(event)
+        db.add(SOSOutbox(payload=WebSocketSOSMessage(type=kind, data=_convert_to_response(event)).model_dump(mode="json")))
+
+async def notify_local(manager, message):
+    if not settings.REDIS_ENABLED:
+        await manager.broadcast_sos(message)

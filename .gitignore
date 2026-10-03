@@ -10,3 +10,5 @@ uploads/
 
 .env.*
 !.env.example
+
+dev-tokens.json

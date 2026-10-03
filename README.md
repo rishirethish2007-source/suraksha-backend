@@ -22,7 +22,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 An external identity provider must issue signed JWTs. This repository does **not** implement account registration/login or issue production tokens. Tokens must contain `sub` (user ID), `exp`, `iss=suraksha`, and `aud=suraksha-api` (issuer/audience are configurable). The default signing algorithm is HS256. Never embed the signing key in a mobile app or use an `EXPO_PUBLIC_*` variable for it.
 
-All SOS endpoints require a bearer token. Direct creates and cancellations must match `sub`; cancellation and upload also verify event ownership. Nearby queries, acknowledge/respond endpoints, media belonging to other users, and the WebSocket require `role=responder` or `role=admin`. Relay gateways require the signed `scope` claim to include `sos:relay`. Only grant that scope to trusted gateways: origin identity inside a relayed packet is a reported claim, not a cryptographically verified origin signature.
+All SOS endpoints require a bearer token. Direct creates and cancellations must match `sub`; cancellation and upload also verify event ownership. Nearby queries, acknowledge endpoint, media belonging to other users, and the WebSocket require `role=responder` or `role=admin`. Any authenticated phone may relay an SOS with a valid P-256 origin signature and backend-issued device certificate. Enrollment is `POST /api/v1/devices/enroll`; identity is `GET /api/v1/identity/me`. The `/respond` action is available to authenticated nearby volunteers; dashboard queries and acknowledgement remain responder-only.
 
 WebSocket URL: `/api/v1/sos/ws/sos?client_id=<unique-id>`, with the bearer token in the upgrade Authorization header. Browser clients need a trusted proxy supplying that header or a future short-lived WebSocket ticket integration; credentials are deliberately not accepted in query strings. Connections close when their JWT expires.
 
@@ -50,14 +50,12 @@ alembic upgrade head
 
 Do not stamp an empty or unrelated database. Revision 002 handles both the original PostGIS migration schema and the previous application-created coordinate schema. Its downgrade refuses to discard responder history; restore a backup instead. Old media URLs under `/static` are no longer anonymously exposed; migrate existing media storage references before serving historical attachments.
 
-## Validation and remaining integration work
+## Signed relay and WebGIS integration
 
-```sh
-pip install -r requirements-dev.txt
-python -m pytest -q
-alembic upgrade head --sql
-```
+Revision 004 adds a generated PostGIS geography point and GiST index; nearby queries use ST_DWithin/ST_Distance. Latitude/longitude remain the API contract. Run migrations, not create_all, in production.
 
-Local regression tests use an isolated in-memory database and cover serialization, timezone normalization, deduplication, cancellation ownership/tombstones, expiry, responder idempotency, geographic distance, upload IDs/limits, JWT enforcement, and WebSocket connection changes. PostgreSQL advisory locks serialize creates/cancellations across workers; this requires PostgreSQL integration validation in deployment.
+With `REDIS_ENABLED=true`, each alert/status mutation writes a transactional database outbox; workers publish committed events to Redis and all API processes fan them out to their WebSockets. Delivery is at least once. WebGIS must upsert by sos_id and reconcile `/active` on connect/reconnect because Redis Pub/Sub and WebSockets are not durable client queues. With Redis disabled, fanout and rate limiting are single-process only.
 
-Rate limiting and WebSocket fanout are currently process-local. Run one worker until shared Redis-backed rate limiting/fanout is implemented. The user account provider, cryptographically signed BLE origin protocol, physical-device testing, and operational emergency-response integration are not supplied by these repositories. Server acceptance is not a guarantee that a responder has been dispatched.
+Device certificates bind a P-256 public key to the authenticated subject and device ID. Relayed origin identity, location, timestamp, TTL, hop limit and message are verified before persistence. Mutable relay history is telemetry, not authenticated evidence of a route. Accuracy/altitude/media metadata are not origin-signed. Offline certificates expire after 30 days by default; offline revocation is not possible. Keep the CA private key stable in a secret manager and arrange certificate renewal and coordinated CA pin rotation. Production OIDC uses configurable issuer/audience/algorithm and a PEM verification key; key rotation must update backend configuration. No production identity provider or credentials are included.
+
+See [TESTING.md](TESTING.md) for Docker setup, test accounts, database checks and phone acceptance tests. [examples/active-relayed-sos.json](examples/active-relayed-sos.json) is a synthetic response fixture; it is not a signed intake request.

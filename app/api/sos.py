@@ -15,6 +15,7 @@ from app.schemas.sos import (
 from app.services import sos_service
 from app.websocket.manager import ws_manager
 from app.config import settings
+from app.device_security import verify_origin
 from app.auth import validate_token, require_subject, require_responder
 
 router = APIRouter(prefix="/api/v1/sos", tags=["SOS"])
@@ -22,10 +23,19 @@ router = APIRouter(prefix="/api/v1/sos", tags=["SOS"])
 # Simple in-memory rate limiting dictionary: { user_id: [timestamps] }
 _rate_limits = {}
 
-def check_rate_limit(user_id: str):
+async def check_rate_limit(user_id: str):
     """
     Checks if the user has exceeded the maximum allowed SOS events per minute.
     """
+    if settings.REDIS_ENABLED:
+        from app.realtime import redis_client
+        try:
+            count = await redis_client.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],60) end; return n", 1, f"sos:limit:{user_id}")
+        except Exception:
+            raise HTTPException(503, "Rate limiter unavailable; retry shortly") from None
+        if count > settings.SOS_RATE_LIMIT_PER_MINUTE:
+            raise HTTPException(429, "Rate limit exceeded. Try again later.")
+        return
     now = time.monotonic()
     for key in list(_rate_limits):
         if not _rate_limits[key] or now - _rate_limits[key][-1] >= 60:
@@ -52,9 +62,13 @@ async def create_sos(
     """
     if sos_data.hop_count == 0:
         require_subject(claims, sos_data.user_id)
-    elif "sos:relay" not in claims.get("scope", "").split():
-        raise HTTPException(403, "Relay permission required")
-    check_rate_limit(claims["sub"])
+    else:
+        if not sos_data.origin_proof:
+            raise HTTPException(403, "Relayed alerts require a signed origin proof")
+        verify_origin(sos_data.origin_proof, sos_data)
+    if sos_data.hop_count == 0 and sos_data.origin_proof:
+        verify_origin(sos_data.origin_proof, sos_data)
+    await check_rate_limit(claims["sub"])
 
     return await sos_service.process_sos(db, sos_data, ws_manager)
 
@@ -113,7 +127,7 @@ async def respond_to_sos(
     Mark that a responder is en route to the SOS location.
     """
     require_subject(claims, user_id)
-    require_responder(claims)
+    # Any authenticated nearby volunteer can offer help; dashboard access remains restricted.
     return await sos_service.respond_to_sos(db, sos_id, user_id, ws_manager)
 
 

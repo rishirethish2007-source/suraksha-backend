@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from app.config import settings
+from app.device_security import OriginProof
 from app.models.sos import SOSType, MessageType, SOSStatus, DeliveryMethod
 
 class SOSLocationSchema(BaseModel):
@@ -23,6 +24,7 @@ class RelayNodeSchema(BaseModel):
     rssi: Optional[int] = None
 
 class SOSCreateRequest(BaseModel):
+    origin_proof: Optional[OriginProof] = None
     sos_id: str = Field(..., min_length=1, max_length=128, description="Client-generated unique ID to prevent duplicates")
     user_id: str = Field(..., min_length=1, max_length=128, description="ID of the user triggering SOS")
     user_name: str = Field(..., min_length=1, max_length=200, description="Name of the user")

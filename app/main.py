@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.sos import router as sos_router
 from app.config import settings
+from app.device_security import router as identity_router
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -27,9 +28,12 @@ async def lifespan(app: FastAPI):
     from app.websocket.manager import ws_manager
     if settings.AUTO_CREATE_TABLES:
         await create_tables()
+    from app.realtime import start_realtime, stop_realtime
+    await start_realtime()
     try:
         yield
     finally:
+        await stop_realtime()
         await ws_manager.close()
         await engine.dispose()
 
@@ -52,6 +56,7 @@ app.add_middleware(
 
 # Include API Routers
 app.include_router(sos_router)
+app.include_router(identity_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():

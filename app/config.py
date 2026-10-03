@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
+    JWT_PUBLIC_KEY: str = ""
+    DEVICE_CA_PRIVATE_KEY: str = ""
+    DEVICE_CERT_DAYS: int = 30
+    REDIS_ENABLED: bool = False
     JWT_ISSUER: str = "suraksha"
     JWT_AUDIENCE: str = "suraksha-api"
     AUTO_CREATE_TABLES: bool = False

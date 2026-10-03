@@ -7,11 +7,12 @@ from app.config import settings
 def validate_token(authorization: str | None = Header(None)) -> dict:
     if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Invalid or missing authentication token")
-    if len(settings.JWT_SECRET_KEY) < 32:
+    key = settings.JWT_PUBLIC_KEY or settings.JWT_SECRET_KEY
+    if not settings.JWT_PUBLIC_KEY and len(settings.JWT_SECRET_KEY) < 32:
         raise HTTPException(503, "Authentication is not configured")
     try:
         claims = jwt.decode(
-            authorization[7:], settings.JWT_SECRET_KEY,
+            authorization[7:], key,
             algorithms=[settings.JWT_ALGORITHM], audience=settings.JWT_AUDIENCE,
             issuer=settings.JWT_ISSUER,
             options={"require_exp": True, "require_sub": True},
