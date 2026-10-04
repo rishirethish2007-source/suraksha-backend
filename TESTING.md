@@ -95,3 +95,40 @@ The API returns `Authentication is not configured` if there is no JWT public key
 Stop Uvicorn and run `python scripts/dev_setup.py --repair-local-auth` from the backend root. This preserves database settings, custom issuer/audience, valid JWT secrets and valid device CA keys; it backs up `.env` before repairing missing/short local auth settings and generates fresh 24-hour tokens. It refuses to replace an external JWT provider or conflicting process-environment overrides. Restart Uvicorn explicitly (editing `.env` may not trigger the reload watcher), then use the new phone-a token from `dev-tokens.json`. Do not post tokens or `.env` contents publicly.
 
 This addresses authentication configuration only. The skipped PostGIS test is separate: set TEST_DATABASE_URL to a disposable migrated PostGIS database to run it.
+
+## Responder dashboard and directions
+
+The backend now serves `/dashboard` directly; no new APK or Node build is required.
+After updating the backend files, keep your existing `.env` and database, then
+restart Uvicorn. Open `http://localhost:8000/dashboard` on the laptop (or the
+laptop's LAN IP on another device). Paste the `phone-c` token from `dev-tokens.json`
+for local testing. Only responder/admin tokens can retrieve dashboard incidents.
+Token storage is in tab memory only. If the token expired, run the existing
+`python scripts/dev_setup.py --repair-local-auth` command to issue fresh tokens.
+
+1. Connect the dashboard, then trigger an SOS from Phone A, directly or via B.
+2. Within the next 15-second refresh, select the received alert. Verify its name,
+   phone if supplied, message, coordinates, GPS accuracy, timestamps and relay hops.
+3. Click Show location map, or Open location. The embedded map uses OpenStreetMap;
+   the external location and directions links use Google Maps. They need internet.
+4. Set the rescue team's origin coordinates, or choose Use my location on the
+   responder's device. Browser geolocation requires permission and localhost or
+   HTTPS; a plain HTTP LAN-IP page may require manual coordinates instead.
+5. Choose Driving or Walking and click Directions & ETA. Google Maps calculates
+   route choices and travel-time estimates. With no origin entered, Maps asks for
+   the starting point or uses its device location. A dispatch laptop's location
+   is not necessarily the rescue team's location.
+6. Acknowledge the event or Mark me en route. Repeating these actions is idempotent.
+7. Cancel the SOS on A. Once cancellation reaches the backend, the card disappears
+   on the next refresh. Expired events also disappear. Newest-first pages contain
+   50 alerts; Next/Previous navigate older active alerts.
+
+`GET /api/v1/dashboard/events?offset=0&limit=50` is authenticated, role-restricted,
+paginated, excludes terminal/expired alerts, and returns no-store responses. The
+public HTML shell contains no incident data. Dashboard polling pauses in a hidden
+tab; it does not call `/health`. This dashboard does not change the phone retry
+behavior discussed previously.
+
+Directions hand off to Google's route provider; this module does not calculate
+or certify a globally fastest/safe route, ingest live disaster road closures, or
+supply offline navigation. Responders must verify local access conditions.
