@@ -87,3 +87,11 @@ npx expo export --platform all
 ```
 
 Tests cover authentication/ownership, deduplication, cancellations, TTL, spatial lookup, outbox publication, packet limits, signature tampering and durable forwarding. CI additionally compiles Android native code; successful JS tests/export do not prove native compilation or radio interoperability. Physical radio/background behavior and production OIDC/CA configuration remain deployment acceptance gates.
+
+## Fix identity/me HTTP 503 during local test sign-in
+
+The API returns `Authentication is not configured` if there is no JWT public key and the configured JWT secret is shorter than 32 characters. Passing unit tests does not configure the running server: tests use temporary keys.
+
+Stop Uvicorn and run `python scripts/dev_setup.py --repair-local-auth` from the backend root. This preserves database settings, custom issuer/audience, valid JWT secrets and valid device CA keys; it backs up `.env` before repairing missing/short local auth settings and generates fresh 24-hour tokens. It refuses to replace an external JWT provider or conflicting process-environment overrides. Restart Uvicorn explicitly (editing `.env` may not trigger the reload watcher), then use the new phone-a token from `dev-tokens.json`. Do not post tokens or `.env` contents publicly.
+
+This addresses authentication configuration only. The skipped PostGIS test is separate: set TEST_DATABASE_URL to a disposable migrated PostGIS database to run it.
