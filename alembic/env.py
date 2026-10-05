@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import pool
 from app.config import settings
 from app.db.database import Base
+import app.models.accounts
 import app.models.sos
 
 config = context.config

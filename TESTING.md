@@ -132,3 +132,59 @@ behavior discussed previously.
 Directions hand off to Google's route provider; this module does not calculate
 or certify a globally fastest/safe route, ingest live disaster road closures, or
 supply offline navigation. Responders must verify local access conditions.
+
+## Individual sign-in and saved server settings (mobile 1.1.0)
+
+Update backend code, keeping `.env`, uploads, signing keys and database volumes.
+With your normal virtual environment active and DATABASE_URL pointing to the
+running PostGIS database, stop Uvicorn and run:
+
+```powershell
+alembic upgrade head
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Migration 005 adds accounts and account_sessions without replacing SOS data.
+The existing JWT_SECRET_KEY must contain at least 32 characters and the local
+signing algorithm must be HS256. The existing dev_setup repair command can
+configure missing local keys; do not overwrite a working .env. External OIDC
+configurations continue using organisation sign-in instead of this local issuer.
+
+1. Install APK 1.1.0 over Suraksha Test on both phones.
+2. Open **Settings — backend address**, enter `http://172.18.66.69:8000` (or the
+   laptop's current address) and tap **Check connection and save**. Settings remain
+   after restarting the app. This checks the device CA without sending credentials.
+3. Sign out of any old phone-a/phone-b test session. Choose **New user? Create an
+   account**, supply a unique email, password of 12–128 characters, name and phone.
+   Each person uses their own account. Email is a login identifier, not verified.
+4. Close/reopen the app, then test again after 15 minutes: access renews automatically.
+   Device certificates renew on SOS generation when nearing expiry and online.
+5. Change the laptop IP and repeat step 2. The same backend CA preserves sign-in.
+   An unrelated CA is rejected to prevent accidentally sending credentials/queued
+   alerts to another organisation. A genuinely different backend needs fresh app
+   setup; changing an IP does not require an APK rebuild.
+
+Access JWTs last 15 minutes. Random per-device refresh secrets have no scheduled
+expiry, are saved in SecureStore on the phone, and are stored only as SHA-256
+hashes on the backend. Logout revokes the refresh secret when online and always
+clears local credentials. If logout occurs offline, an operator can revoke the
+remaining server session. Issued access JWTs remain valid for at most 15 minutes.
+This provides persistent sign-in, not an irrevocable permanent access token.
+
+New accounts always have the user role. To give a registered rescue worker
+responder-dashboard access, run on the trusted backend machine:
+
+```powershell
+python scripts/manage_account.py responder@example.com --role responder
+```
+
+Then use the dashboard's email/password sign-in. Role changes revoke refresh
+sessions; sign in again. Dashboard credentials stay in tab memory, while mobile
+sign-in persists. Operator commands also support `--revoke-sessions`, `--disable`,
+`--enable`, and `--reset-password` (password entered via a hidden prompt).
+
+Local HTTP is explicitly a test-build feature. Deploy account sign-in over HTTPS.
+These local accounts do not include email verification or email-based password
+recovery; use the trusted operator password-reset command or organisation OIDC.
+The existing test-token path remains under Advanced for compatibility, and those
+old test tokens still expire after 24 hours.

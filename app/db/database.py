@@ -37,6 +37,7 @@ async def create_tables():
     """
     Utility function to create tables during development.
     """
+    import app.models.accounts
     import app.models.sos  # register tables before creating metadata
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

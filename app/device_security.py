@@ -29,6 +29,10 @@ def ca_key():
         raise HTTPException(503, "Device certificate authority must use P-256")
     return key
 
+@router.get("/identity/authority")
+def authority():
+    return {"ca_public_key": ca_key().public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint).hex()}
+
 @router.get("/identity/me")
 def identity(claims: dict = Depends(validate_token)):
     return {"user_id": claims["sub"], "name": claims.get("name", claims["sub"]),

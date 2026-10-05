@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.sos import router as sos_router
+from app.api.accounts import router as accounts_router
 from app.api.dashboard import router as dashboard_router
 from app.config import settings
 from app.device_security import router as identity_router
@@ -56,6 +57,7 @@ app.add_middleware(
 )
 
 # Include API Routers
+app.include_router(accounts_router)
 app.include_router(dashboard_router)
 app.include_router(sos_router)
 app.include_router(identity_router)

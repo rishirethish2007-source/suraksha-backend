@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', user = null, events = [], selected = null, offset = 0, nextOffset = null;
+let refreshSecret = '', accessExpires = 0, renewal;
 let timer, controller, generation = 0, loading = false, detailSignature = '';
 const notice = message => { $('notice').textContent = message; };
 function date(value) {
@@ -9,6 +10,15 @@ function date(value) {
   return new Date(normalized).toLocaleString();
 }
 async function api(path, options = {}) {
+  if (refreshSecret && Date.now() >= accessExpires - 60000 && !path.startsWith('/api/v1/accounts/')) {
+    if (!renewal) renewal = (async () => {
+      const currentGeneration = generation;
+      const result = await api('/api/v1/accounts/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({refresh_token:refreshSecret})});
+      if (currentGeneration !== generation) throw new DOMException('Signed out','AbortError');
+      token=result.access_token;accessExpires=Date.now()+result.expires_in*1000;
+    })().finally(()=>{renewal=undefined;});
+    await renewal;
+  }
   const localController = new AbortController();
   const cancel = () => localController.abort();
   const parent = controller; parent?.signal.addEventListener('abort', cancel, {once:true});
@@ -111,6 +121,8 @@ async function refresh() {
   finally { if (currentGeneration === generation) { loading=false; $('refresh').disabled=false; } }
 }
 function disconnect() {
+  if (refreshSecret) void fetch('/api/v1/accounts/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshSecret}),signal:AbortSignal.timeout(10000)}).catch(()=>{});
+  refreshSecret='';accessExpires=0;
   generation++; detailSignature=''; controller?.abort(); clearInterval(timer); token='';user=null;events=[];selected=null;offset=0;loading=false;
   $('token').value='';$('desk').hidden=true;$('login').hidden=false;$('connection').textContent='Not connected';$('events').replaceChildren();$('detail').replaceChildren();notice('');
 }
@@ -123,6 +135,19 @@ $('login-form').addEventListener('submit',async e=>{
     $('identity').textContent=`Connected as ${user.name || user.user_id}`;$('login').hidden=true;$('desk').hidden=false;
     await refresh();if(currentGeneration!==generation)return;timer=setInterval(()=>{if(!document.hidden)void refresh();},15000);
   } catch(error) { if(currentGeneration===generation){disconnect();notice(error.message);} }
+});
+$('account-form').addEventListener('submit',async e=>{
+  e.preventDefault();const email=$('account-email').value.trim(),password=$('account-password').value;
+  disconnect();controller=new AbortController();const currentGeneration=generation;
+  try {
+    const result=await api('/api/v1/accounts/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    if(currentGeneration!==generation)return;
+    token=result.access_token;refreshSecret=result.refresh_token;accessExpires=Date.now()+result.expires_in*1000;
+    const identity=await api('/api/v1/identity/me');if(currentGeneration!==generation)return;user=identity;
+    if(!['responder','admin'].includes(user.role))throw new Error('Ask the backend operator to grant your account responder access.');
+    $('account-password').value='';$('identity').textContent=`Connected as ${user.name || user.user_id}`;$('login').hidden=true;$('desk').hidden=false;
+    await refresh();if(currentGeneration!==generation)return;timer=setInterval(()=>{if(!document.hidden)void refresh();},15000);
+  } catch(error) {if(currentGeneration===generation){disconnect();notice(error.message);}}
 });
 $('logout').addEventListener('click',disconnect);$('refresh').addEventListener('click',()=>{notice('');void refresh();});
 $('next').addEventListener('click',()=>{if(!loading&&nextOffset!==null){offset=nextOffset;void refresh();}});
