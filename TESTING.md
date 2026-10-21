@@ -188,3 +188,16 @@ These local accounts do not include email verification or email-based password
 recovery; use the trusted operator password-reset command or organisation OIDC.
 The existing test-token path remains under Advanced for compatibility, and those
 old test tokens still expire after 24 hours.
+
+## SOS without internet or location
+Deploy the backend first and run `alembic upgrade head` (migration 006 permits null coordinates).
+Install a rebuilt mobile app on two real phones signed in/enrolled while online.
+On phone A, disable Wi-Fi/mobile data and GPS; keep Bluetooth enabled.
+Trigger SOS: it must advertise over Bluetooth without asking for a GPS fix.
+Phone B with relay enabled should show the alert with location unavailable.
+With B offline it should rebroadcast; with B online it should upload the same SOS ID.
+The dashboard must show the alert without map/directions controls or a fabricated (0,0) pin.
+Reconnect A: retry must use the same ID without duplicates. Verify cancellation and TTL expiry.
+Repeat with Bluetooth disabled/permission denied: report queued, never confirmed delivery.
+Already-installed older apps require an update to recognize null-location BLE packets.
+Device enrollment and a still-valid certificate remain required for authenticated offline relay.

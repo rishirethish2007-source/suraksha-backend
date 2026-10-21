@@ -172,3 +172,16 @@ async def test_websocket_snapshot_survives_connections_changing():
 async def test_foreign_tombstone_cannot_block_owner(db, payload):
     await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id="stranger"), AsyncMock())
     assert (await service.process_sos(db, payload, AsyncMock())).success
+
+@pytest.mark.asyncio
+async def test_locationless_sos_is_persisted_and_broadcast_without_fake_coordinates(db, payload):
+    payload.location = None
+    ws = AsyncMock()
+    assert (await service.process_sos(db, payload, ws)).success
+    event = (await db.execute(select(SOSEvent))).scalar_one()
+    assert event.latitude is None and event.longitude is None
+    assert service._convert_to_response(event).location is None
+    assert ws.broadcast_sos.call_args.args[0].data.location is None
+    assert await service.get_active_sos_events(db, 12, 77, 100) == []
+    assert (await service.process_sos(db, payload, ws)).is_duplicate
+    assert (await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id='owner'), ws)).success

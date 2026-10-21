@@ -63,7 +63,7 @@ def verify_origin(proof: OriginProof, event):
             raise ValueError("Signed payload must be an object")
         expected = {"sos_id": event.sos_id, "user_id": event.user_id, "user_name": event.user_name,
             "user_phone": event.user_phone or "", "sos_type": event.sos_type.value,
-            "lat": event.location.lat, "lng": event.location.lng,
+            "lat": event.location.lat if event.location else None, "lng": event.location.lng if event.location else None,
             "origin_device_id": event.origin_device_id, "ttl_seconds": event.ttl_seconds,
             "max_hops": event.max_hops, "message": event.message or ""}
         if any(signed.get(key) != value for key, value in expected.items()):

@@ -31,7 +31,7 @@ class SOSCreateRequest(BaseModel):
     user_phone: Optional[str] = Field(None, description="Phone number of the user")
     sos_type: SOSType = Field(..., description="Category of SOS")
     message_type: MessageType = Field(MessageType.SOS_ALERT, description="Type of SOS message")
-    location: SOSLocationSchema = Field(..., description="Location of the SOS event")
+    location: Optional[SOSLocationSchema] = Field(None, description="Location, or null when unavailable")
     delivery_method: DeliveryMethod = Field(DeliveryMethod.DIRECT_ONLINE, description="Method of alert delivery")
     hop_count: int = Field(0, description="Number of hops (if relayed)", ge=0)
     max_hops: int = Field(15, ge=0, le=15, description="Maximum allowed hops")
@@ -91,7 +91,7 @@ class SOSEventResponse(BaseModel):
     message_type: MessageType
     status: SOSStatus
     delivery_method: DeliveryMethod
-    location: SOSLocationSchema
+    location: Optional[SOSLocationSchema]
     hop_count: int
     relay_chain: Optional[List[Any]]
     message: Optional[str]
