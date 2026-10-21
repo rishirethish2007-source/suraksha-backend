@@ -60,3 +60,13 @@ async def test_dashboard_returns_details_and_filters_expired_cancelled(desk):
     assert all_events[0]['user_phone'] == '+911234567890'
     assert all_events[0]['message'] == 'Need assistance'
     assert (await client.get('/api/v1/dashboard/events?limit=1000')).status_code == 422
+
+async def test_dashboard_includes_locationless_alert(desk):
+    app, db, client = desk
+    app.dependency_overrides[validate_token] = lambda: {'sub':'desk','role':'responder'}
+    alert = event('no-location')
+    alert.latitude = alert.longitude = None
+    db.add(alert); await db.commit()
+    response = await client.get('/api/v1/dashboard/events')
+    assert response.status_code == 200
+    assert response.json()['events'][0]['location'] is None

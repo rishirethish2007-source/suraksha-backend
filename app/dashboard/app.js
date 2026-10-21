@@ -44,6 +44,7 @@ function field(list, name, value) {
   dt.textContent = name; dd.textContent = value == null || value === '' ? 'Not provided' : String(value); list.append(dt, dd);
 }
 function routeURL(event) {
+  if (!event.location) throw new Error('Location unavailable for this SOS.');
   const lat = $('origin-lat').value.trim(), lng = $('origin-lng').value.trim();
   const url = new URL('https://www.google.com/maps/dir/');
   url.searchParams.set('api', '1'); url.searchParams.set('destination', `${event.location.lat},${event.location.lng}`);
@@ -65,16 +66,18 @@ function renderDetail() {
   const fields = document.createElement('dl'); fields.className = 'fields';
   field(fields, 'SOS ID', event.sos_id); field(fields, 'Status', event.status); field(fields, 'Name', event.user_name);
   field(fields, 'Phone', event.user_phone); field(fields, 'Message', event.message);
-  field(fields, 'Coordinates', `${event.location.lat.toFixed(6)}, ${event.location.lng.toFixed(6)}`);
-  field(fields, 'GPS accuracy', event.location.accuracy == null ? null : `±${event.location.accuracy} m`);
+  field(fields, 'Coordinates', event.location ? `${event.location.lat.toFixed(6)}, ${event.location.lng.toFixed(6)}` : 'Location unavailable');
+  field(fields, 'GPS accuracy', event.location?.accuracy == null ? null : `±${event.location.accuracy} m`);
   field(fields, 'Triggered', date(event.client_timestamp)); field(fields, 'Received', date(event.created_at));
   field(fields, 'Delivery', `${event.delivery_method} · ${event.hop_count} relay hops`);
   field(fields, 'En route', event.responders_en_route); box.append(fields);
   const actions = document.createElement('div'); actions.className = 'actions';
+  if (event.location) {
   const route = link('Directions & ETA', '#');
   route.addEventListener('click', e => { try { route.href = routeURL(event); notice(''); } catch (error) { e.preventDefault(); notice(error.message); } });
   const mapURL = new URL('https://www.google.com/maps/search/'); mapURL.searchParams.set('api', '1'); mapURL.searchParams.set('query', `${event.location.lat},${event.location.lng}`);
   actions.append(route, link('Open location', mapURL.href));
+  }
   if (event.user_phone && /^[+\d\s().-]{3,30}$/.test(event.user_phone)) actions.append(link('Call person', `tel:${event.user_phone.replace(/[^+\d]/g, '')}`));
   for (const [action,label] of [['acknowledge','Acknowledge'],['respond','Mark me en route']]) {
     const button = document.createElement('button'); button.textContent = label; button.type = 'button';
@@ -88,13 +91,16 @@ function renderDetail() {
       finally { button.disabled = false; }
     }); actions.append(button);
   }
+  if (event.location) {
   const mapButton = document.createElement('button'); mapButton.textContent = 'Show location map'; mapButton.className = 'secondary';
   mapButton.addEventListener('click', () => {
     const {lat,lng} = event.location; const url = new URL('https://www.openstreetmap.org/export/embed.html');
     url.searchParams.set('bbox', `${Math.max(-180,lng-.015)},${Math.max(-90,lat-.01)},${Math.min(180,lng+.015)},${Math.min(90,lat+.01)}`);
     url.searchParams.set('layer','mapnik'); url.searchParams.set('marker',`${lat},${lng}`);
     const frame = document.createElement('iframe'); frame.title = 'SOS location on OpenStreetMap'; frame.src = url.href; frame.referrerPolicy = 'no-referrer'; box.append(frame); mapButton.disabled = true;
-  }); actions.append(mapButton); box.append(actions);
+  }); actions.append(mapButton);
+  }
+  box.append(actions);
 }
 function render() {
   $('events').replaceChildren(); $('count').textContent = `${events.length} on this page`;

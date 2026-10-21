@@ -36,7 +36,7 @@ def _convert_to_response(sos: SOSEvent, distance: Optional[float] = None) -> SOS
         message_type=sos.message_type,
         status=sos.status,
         delivery_method=sos.delivery_method,
-        location=SOSLocationSchema(lat=sos.latitude, lng=sos.longitude, altitude=sos.altitude, accuracy=sos.location_accuracy, provider=sos.location_provider),
+        location=SOSLocationSchema(lat=sos.latitude, lng=sos.longitude, altitude=sos.altitude, accuracy=sos.location_accuracy, provider=sos.location_provider) if sos.latitude is not None and sos.longitude is not None else None,
         hop_count=sos.hop_count,
         relay_chain=sos.relay_chain,
         message=sos.message,
@@ -86,11 +86,11 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
         user_phone=sos_data.user_phone,
         sos_type=sos_data.sos_type,
         message_type=sos_data.message_type,
-        latitude=sos_data.location.lat,
-        longitude=sos_data.location.lng,
-        altitude=sos_data.location.altitude,
-        location_accuracy=sos_data.location.accuracy,
-        location_provider=sos_data.location.provider,
+        latitude=sos_data.location.lat if sos_data.location else None,
+        longitude=sos_data.location.lng if sos_data.location else None,
+        altitude=sos_data.location.altitude if sos_data.location else None,
+        location_accuracy=sos_data.location.accuracy if sos_data.location else None,
+        location_provider=sos_data.location.provider if sos_data.location else None,
         delivery_method=sos_data.delivery_method,
         hop_count=sos_data.hop_count,
         max_hops=sos_data.max_hops,
@@ -205,6 +205,10 @@ async def get_active_sos_events(db: AsyncSession, lat: float, lng: float, radius
         if time_elapsed >= sos.ttl_seconds:
             continue
             
+        # Unknown-location alerts remain visible in the responder dashboard;
+        # they cannot be honestly included in a proximity query.
+        if sos.latitude is None or sos.longitude is None:
+            continue
         dist = distance_meters(lat, lng, sos.latitude, sos.longitude)
         if dist <= radius_km * 1000:
             resp = _convert_to_response(sos, distance=dist)
