@@ -3,6 +3,7 @@ SQLAlchemy database models for SOS and Media Attachment.
 """
 import enum
 import uuid
+from typing import Optional
 from datetime import datetime
 from sqlalchemy import String, Integer, Float, Text, DateTime, ForeignKey, func, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -54,8 +55,8 @@ class SOSEvent(Base):
     sos_type: Mapped[str] = mapped_column(String, nullable=False)
     message_type: Mapped[str] = mapped_column(String, nullable=False)
     
-    latitude: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    longitude: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     altitude: Mapped[float] = mapped_column(Float, nullable=True)
     location_accuracy: Mapped[float] = mapped_column(Float, nullable=True)
     location_provider: Mapped[str] = mapped_column(String, nullable=True)
