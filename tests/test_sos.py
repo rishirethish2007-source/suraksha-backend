@@ -185,3 +185,90 @@ async def test_locationless_sos_is_persisted_and_broadcast_without_fake_coordina
     assert await service.get_active_sos_events(db, 12, 77, 100) == []
     assert (await service.process_sos(db, payload, ws)).is_duplicate
     assert (await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id='owner'), ws)).success
+
+@pytest.mark.asyncio
+async def test_location_revisions_preserve_status_and_ignore_late_updates(db, payload):
+    payload.origin_device_id = 'device-a'
+    await service.process_sos(db, payload, AsyncMock())
+    await service.respond_to_sos(db, payload.sos_id, 'helper', AsyncMock())
+    update = payload.model_copy(deep=True)
+    update.revision = 2
+    update.location.lat = 13
+    await service.process_sos(db, update, AsyncMock())
+    event = (await db.execute(select(SOSEvent))).scalar_one()
+    assert event.latitude == 13 and event.revision == 2
+    assert event.status == 'RESPONDING' and event.responders_en_route == 1
+    assert (await service.process_sos(db, payload, AsyncMock())).is_duplicate
+    assert event.latitude == 13
+    update.revision = 3
+    update.location = None
+    await service.process_sos(db, update, AsyncMock())
+    assert event.latitude == 13
+    await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id='owner'), AsyncMock())
+    update.revision = 4
+    with pytest.raises(HTTPException) as error:
+        await service.process_sos(db, update, AsyncMock())
+    assert error.value.status_code == 410
+
+@pytest.mark.asyncio
+async def test_revision_cannot_be_written_by_another_device(db, payload):
+    payload.origin_device_id = 'device-a'
+    await service.process_sos(db, payload, AsyncMock())
+    payload.revision = 1
+    payload.origin_device_id = 'device-b'
+    with pytest.raises(HTTPException) as error:
+        await service.process_sos(db, payload, AsyncMock())
+    assert error.value.status_code == 403
+
+@pytest.mark.asyncio
+async def test_heartbeat_keeps_the_original_gps_capture_time(db, payload):
+    captured = datetime.now(timezone.utc) - timedelta(minutes=9)
+    payload.location.captured_at = captured
+    await service.process_sos(db, payload, AsyncMock())
+    update = payload.model_copy(update={'revision': 1, 'location': None, 'client_timestamp': datetime.now(timezone.utc)})
+    await service.process_sos(db, update, AsyncMock())
+    event = (await db.execute(select(SOSEvent))).scalar_one()
+    response = service._convert_to_response(event)
+    assert response.location.captured_at == captured
+    assert response.client_timestamp > response.location.captured_at
+    assert response.location.lat == payload.location.lat
+    older = payload.model_copy(deep=True)
+    older.revision = 2
+    older.location.lat = 20
+    older.location.captured_at = captured - timedelta(minutes=1)
+    await service.process_sos(db, older, AsyncMock())
+    assert (await service.get_active_sos_events(db, 12, 77, 50))[0].location.lat == 12
+
+@pytest.mark.asyncio
+async def test_busy_relay_and_duplicates_do_not_use_new_sos_budget(db, payload, monkeypatch):
+    from app.services.rate_limit import _windows
+    _windows.clear()
+    monkeypatch.setattr(settings, 'REDIS_ENABLED', False)
+    monkeypatch.setattr(settings, 'SOS_RATE_LIMIT_PER_MINUTE', 1)
+    for number in range(8):
+        event = payload.model_copy(update={'sos_id': f'busy-{number}', 'user_id': f'owner-{number}', 'hop_count': 1})
+        await service.process_sos(db, event, AsyncMock(), actor_id='one-online-relay')
+        for _ in range(3):
+            assert (await service.process_sos(db, event, AsyncMock(), actor_id='one-online-relay')).is_duplicate
+    assert _windows['relay:one-online-relay'][1] == 8
+    first = payload.model_copy(update={'sos_id': 'busy-0', 'user_id': 'owner-0', 'revision': 1})
+    await service.process_sos(db, first, AsyncMock(), actor_id='owner-0')
+    assert _windows['origin:owner-0'][1] == 1
+    assert _windows['update:owner-0'][1] == 1
+    _windows.clear()
+
+@pytest.mark.asyncio
+async def test_relay_limit_returns_retry_after_without_charging_origin(db, payload, monkeypatch):
+    from app.services.rate_limit import _windows
+    _windows.clear()
+    monkeypatch.setattr(settings, 'REDIS_ENABLED', False)
+    monkeypatch.setattr(settings, 'SOS_RELAY_RATE_LIMIT_PER_MINUTE', 1)
+    first = payload.model_copy(update={'hop_count': 1})
+    await service.process_sos(db, first, AsyncMock(), actor_id='relay')
+    second = payload.model_copy(update={'sos_id': 'second', 'user_id': 'second-owner', 'hop_count': 1})
+    with pytest.raises(HTTPException) as error:
+        await service.process_sos(db, second, AsyncMock(), actor_id='relay')
+    assert error.value.status_code == 429
+    assert 1 <= int(error.value.headers['Retry-After']) <= 60
+    assert 'origin:second-owner' not in _windows
+    _windows.clear()

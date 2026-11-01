@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     SOS_MAX_HOP_COUNT: int = 15
     SOS_TTL_SECONDS: int = 3600
     SOS_RATE_LIMIT_PER_MINUTE: int = 5
+    SOS_UPDATE_RATE_LIMIT_PER_MINUTE: int = 60
+    SOS_RELAY_RATE_LIMIT_PER_MINUTE: int = 240
     
     MEDIA_UPLOAD_MAX_SIZE_MB: int = 10
     

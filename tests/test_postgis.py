@@ -57,3 +57,31 @@ async def test_postgis_spatial_query_and_atomic_outbox(monkeypatch):
             await db.execute(text('DELETE FROM sos_events WHERE sos_id=:id'),{'id':sos_id})
             await db.commit()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_redis_submission_budgets_are_atomic(monkeypatch):
+    url = os.getenv('TEST_REDIS_URL')
+    if not url:
+        pytest.skip('Set TEST_REDIS_URL to a disposable Redis instance')
+    from redis.asyncio import Redis
+    from fastapi import HTTPException
+    from app import realtime
+    from app.services.rate_limit import check_submission
+    redis = Redis.from_url(url, decode_responses=True)
+    tag = str(uuid4())
+    owner, other, relay = f'owner-{tag}', f'other-{tag}', f'relay-{tag}'
+    monkeypatch.setattr(realtime, 'redis_client', redis)
+    monkeypatch.setattr(settings, 'REDIS_ENABLED', True)
+    monkeypatch.setattr(settings, 'SOS_RELAY_RATE_LIMIT_PER_MINUTE', 1)
+    try:
+        await check_submission(relay, owner, new=True, relayed=True)
+        with pytest.raises(HTTPException) as error:
+            await check_submission(relay, other, new=True, relayed=True)
+        assert error.value.status_code == 429
+        assert 1 <= int(error.value.headers['Retry-After']) <= 60
+        assert await redis.get(f'sos:budget:origin:{owner}') == '1'
+        assert await redis.get(f'sos:budget:origin:{other}') is None
+    finally:
+        await redis.delete(f'sos:budget:origin:{owner}', f'sos:budget:origin:{other}', f'sos:budget:relay:{relay}')
+        await redis.aclose()
