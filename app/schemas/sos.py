@@ -12,7 +12,8 @@ class SOSLocationSchema(BaseModel):
     lat: float = Field(..., description="Latitude coordinate", ge=-90, le=90)
     lng: float = Field(..., description="Longitude coordinate", ge=-180, le=180)
     altitude: Optional[float] = Field(None, description="Altitude in meters")
-    accuracy: Optional[float] = Field(None, description="Location accuracy in meters")
+    accuracy: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="Location accuracy in meters")
+    captured_at: Optional[datetime] = None
     heading: Optional[float] = Field(None, description="Heading in degrees")
     speed: Optional[float] = Field(None, description="Speed in meters per second")
     provider: Optional[str] = Field(None, description="Location provider (e.g., GPS, Network)")
@@ -24,9 +25,12 @@ class RelayNodeSchema(BaseModel):
     rssi: Optional[int] = None
 
 class SOSCreateRequest(BaseModel):
-    protocol_version: Optional[int] = Field(None, ge=2, le=2)
+    protocol_version: Optional[int] = Field(None, ge=2, le=3)
     revision: int = Field(0, ge=0, le=9007199254740991)
     helper_requested: bool = False
+    helper_request_id: Optional[str] = Field(None, max_length=128)
+    helper_request_expires_at: Optional[datetime] = None
+    helper_state: Optional[str] = Field(None, pattern="^(pending|withdrawn)$")
     origin_proof: Optional[OriginProof] = None
     sos_id: str = Field(..., min_length=1, max_length=128, description="Client-generated unique ID to prevent duplicates")
     user_id: str = Field(..., min_length=1, max_length=128, description="ID of the user triggering SOS")
@@ -47,6 +51,12 @@ class SOSCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_limits(self):
+        if self.protocol_version != 3:
+            self.helper_request_id = None
+            self.helper_request_expires_at = None
+            self.helper_state = None
+            if self.location:
+                self.location.captured_at = None
         if self.hop_count > min(self.max_hops, settings.SOS_MAX_HOP_COUNT):
             raise ValueError("Maximum relay hop count exceeded")
         if self.ttl_seconds > settings.SOS_TTL_SECONDS:
@@ -55,6 +65,14 @@ class SOSCreateRequest(BaseModel):
             raise ValueError("Use the cancellation endpoint for cancellations")
         if self.client_timestamp.tzinfo is None:
             raise ValueError("client_timestamp must include a timezone")
+        for value in (self.helper_request_expires_at, self.location.captured_at if self.location else None):
+            if value and value.tzinfo is None:
+                raise ValueError("Location and helper timestamps must include a timezone")
+        if self.location and self.location.captured_at and (self.location.captured_at - self.client_timestamp).total_seconds() > 300:
+            raise ValueError("Location capture time is in the future")
+        if self.protocol_version == 3 and self.helper_requested:
+            if not self.helper_request_id or not self.helper_request_expires_at or self.helper_state != 'pending':
+                raise ValueError("Helper requests require an ID, expiry and pending state")
         return self
 
     model_config = ConfigDict(
@@ -83,6 +101,7 @@ class SOSResponse(BaseModel):
     message: str
     is_duplicate: bool = False
     server_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    receipt: Optional[str] = None
 
 class SOSEventResponse(BaseModel):
     id: str

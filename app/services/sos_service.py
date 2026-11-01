@@ -15,7 +15,7 @@ from fastapi import UploadFile, HTTPException
 from app.config import settings
 from app.models.sos import SOSOutbox
 
-from app.models.sos import SOSEvent, SOSStatus, MediaAttachment, SOSCancellationRecord
+from app.models.sos import SOSEvent, SOSStatus, DeliveryMethod, MediaAttachment, SOSCancellationRecord
 from app.schemas.sos import (
     SOSCreateRequest, SOSCancelRequest, SOSResponse, 
     SOSEventResponse, WebSocketSOSMessage, MediaUploadResponse, SOSLocationSchema
@@ -36,7 +36,8 @@ def _convert_to_response(sos: SOSEvent, distance: Optional[float] = None) -> SOS
         message_type=sos.message_type,
         status=sos.status,
         delivery_method=sos.delivery_method,
-        location=SOSLocationSchema(lat=sos.latitude, lng=sos.longitude, altitude=sos.altitude, accuracy=sos.location_accuracy, provider=sos.location_provider) if sos.latitude is not None and sos.longitude is not None else None,
+        location=SOSLocationSchema(lat=sos.latitude, lng=sos.longitude, altitude=sos.altitude, accuracy=sos.location_accuracy, provider=sos.location_provider,
+            captured_at=sos.location_captured_at.replace(tzinfo=timezone.utc) if sos.location_captured_at else None) if sos.latitude is not None and sos.longitude is not None else None,
         hop_count=sos.hop_count,
         relay_chain=sos.relay_chain,
         message=sos.message,
@@ -50,7 +51,7 @@ def _convert_to_response(sos: SOSEvent, distance: Optional[float] = None) -> SOS
     )
 
 
-async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: WebSocketManager) -> SOSResponse:
+async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: WebSocketManager, actor_id: str | None = None) -> SOSResponse:
     """
     Process a new SOS alert, deduplicate, save to DB, and broadcast.
     """
@@ -70,21 +71,29 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     if existing_sos:
         if existing_sos.user_id != sos_data.user_id:
             raise HTTPException(409, "SOS ID belongs to another user")
+        if existing_sos.origin_device_id != sos_data.origin_device_id:
+            raise HTTPException(403, 'Only the originating device may submit this SOS')
+        if existing_sos.status == SOSStatus.CANCELLED.value:
+            raise HTTPException(410, 'SOS has been cancelled')
+        if existing_sos.status not in {SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value, SOSStatus.RESPONDING.value}:
+            raise HTTPException(410, 'SOS is no longer active')
         if sos_data.revision > existing_sos.revision:
-            if existing_sos.origin_device_id != sos_data.origin_device_id:
-                raise HTTPException(403, 'Only the originating device may update this SOS')
-            if existing_sos.status not in {SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value, SOSStatus.RESPONDING.value}:
-                raise HTTPException(410, 'SOS is no longer active')
+            if actor_id:
+                from app.services.rate_limit import check_submission
+                await check_submission(actor_id, sos_data.user_id, new=False,
+                    relayed=sos_data.hop_count > 0 or sos_data.delivery_method == DeliveryMethod.BLE_RELAY)
             existing_sos.revision = sos_data.revision
             existing_sos.client_timestamp = timestamp
             existing_sos.ttl_seconds = sos_data.ttl_seconds
             # A failed fix must not erase the last usable coordinates.
-            if sos_data.location:
+            captured_at = sos_data.location.captured_at.astimezone(timezone.utc).replace(tzinfo=None) if sos_data.location and sos_data.location.captured_at else None
+            if sos_data.location and (not captured_at or not existing_sos.location_captured_at or captured_at >= existing_sos.location_captured_at):
                 existing_sos.latitude = sos_data.location.lat
                 existing_sos.longitude = sos_data.location.lng
                 existing_sos.altitude = sos_data.location.altitude
                 existing_sos.location_accuracy = sos_data.location.accuracy
                 existing_sos.location_provider = sos_data.location.provider
+                existing_sos.location_captured_at = captured_at
             await stage_broadcast(db, existing_sos, 'sos_update')
             await db.commit()
             await db.refresh(existing_sos)
@@ -102,6 +111,10 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     if age >= sos_data.ttl_seconds or age < -300:
         raise HTTPException(422, "SOS timestamp is expired or too far in the future")
 
+    if actor_id:
+        from app.services.rate_limit import check_submission
+        await check_submission(actor_id, sos_data.user_id, new=True,
+            relayed=sos_data.hop_count > 0 or sos_data.delivery_method == DeliveryMethod.BLE_RELAY)
     # Create new SOS record
     new_sos = SOSEvent(
         sos_id=sos_data.sos_id,
@@ -116,6 +129,7 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
         altitude=sos_data.location.altitude if sos_data.location else None,
         location_accuracy=sos_data.location.accuracy if sos_data.location else None,
         location_provider=sos_data.location.provider if sos_data.location else None,
+        location_captured_at=sos_data.location.captured_at.astimezone(timezone.utc).replace(tzinfo=None) if sos_data.location and sos_data.location.captured_at else None,
         delivery_method=sos_data.delivery_method,
         hop_count=sos_data.hop_count,
         max_hops=sos_data.max_hops,

@@ -68,9 +68,19 @@ def verify_origin(proof: OriginProof, event):
             "max_hops": event.max_hops, "message": event.message or ""}
         if signed.get('protocol_version') != event.protocol_version:
             raise ValueError('Protocol version mismatch')
-        if event.protocol_version == 2:
-            expected.update(protocol_version=2, message_type=event.message_type.value, revision=event.revision,
+        if event.protocol_version in (2, 3):
+            expected.update(protocol_version=event.protocol_version, message_type=event.message_type.value, revision=event.revision,
                             helper_requested=event.helper_requested, target_sos_id='', target_device_id='')
+            if event.protocol_version == 3:
+                expected.update(helper_request_id=event.helper_request_id or '', helper_state=event.helper_state or '',
+                    location_accuracy=event.location.accuracy if event.location else None,
+                    location_provider=(event.location.provider or '') if event.location else '',
+                    receipt_kind='', receipt_revision=0, receipt_message_type='', receipt_status='', receipt_user_id='')
+                for name, value in [('helper_request_expires_at', event.helper_request_expires_at),
+                                    ('location_captured_at', event.location.captured_at if event.location else None)]:
+                    raw_value = signed.get(name)
+                    if (datetime.fromisoformat(raw_value.replace('Z', '+00:00')) if raw_value else None) != value:
+                        raise ValueError('Signed timestamp mismatch')
         elif event.message_type.value != 'SOS_ALERT' or event.revision != 0:
             raise ValueError('Control messages require protocol version 2')
         if any(signed.get(key) != value for key, value in expected.items()):

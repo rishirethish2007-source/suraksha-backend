@@ -61,6 +61,7 @@ class SOSEvent(Base):
     altitude: Mapped[float] = mapped_column(Float, nullable=True)
     location_accuracy: Mapped[float] = mapped_column(Float, nullable=True)
     location_provider: Mapped[str] = mapped_column(String, nullable=True)
+    location_captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     status: Mapped[str] = mapped_column(String, default=SOSStatus.ACTIVE.value, nullable=False, index=True)
     delivery_method: Mapped[str] = mapped_column(String, nullable=False)
