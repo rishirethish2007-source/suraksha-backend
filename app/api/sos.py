@@ -60,6 +60,10 @@ async def create_sos(
     """
     Submit a new SOS alert.
     """
+    if sos_data.message_type.value != 'SOS_ALERT':
+        raise HTTPException(422, 'Use /sos/mesh-cancel for signed cancellation')
+    if sos_data.revision and not sos_data.origin_proof:
+        raise HTTPException(403, 'Location updates require a signed origin proof')
     if sos_data.hop_count == 0:
         require_subject(claims, sos_data.user_id)
     else:
@@ -71,6 +75,20 @@ async def create_sos(
     await check_rate_limit(claims["sub"])
 
     return await sos_service.process_sos(db, sos_data, ws_manager)
+
+
+@router.post('/mesh-cancel', response_model=SOSResponse)
+async def mesh_cancel(sos_data: SOSCreateRequest, db: AsyncSession = Depends(get_db),
+                      claims: dict = Depends(validate_token)):
+    if sos_data.protocol_version != 2 or sos_data.message_type.value != 'SOS_CANCEL' or not sos_data.origin_proof:
+        raise HTTPException(403, 'Cancellation requires a signed version 2 control message')
+    verify_origin(sos_data.origin_proof, sos_data)
+    from datetime import datetime, timezone
+    age = (datetime.now(timezone.utc) - sos_data.client_timestamp).total_seconds()
+    if age < -300 or age >= sos_data.ttl_seconds:
+        raise HTTPException(422, 'Expired cancellation')
+    return await sos_service.cancel_sos(db, SOSCancelRequest(sos_id=sos_data.sos_id,
+        user_id=sos_data.user_id, reason=sos_data.message), ws_manager)
 
 
 @router.post("/cancel", response_model=SOSResponse)

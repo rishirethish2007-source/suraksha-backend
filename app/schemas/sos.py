@@ -24,6 +24,9 @@ class RelayNodeSchema(BaseModel):
     rssi: Optional[int] = None
 
 class SOSCreateRequest(BaseModel):
+    protocol_version: Optional[int] = Field(None, ge=2, le=2)
+    revision: int = Field(0, ge=0, le=9007199254740991)
+    helper_requested: bool = False
     origin_proof: Optional[OriginProof] = None
     sos_id: str = Field(..., min_length=1, max_length=128, description="Client-generated unique ID to prevent duplicates")
     user_id: str = Field(..., min_length=1, max_length=128, description="ID of the user triggering SOS")
@@ -48,7 +51,7 @@ class SOSCreateRequest(BaseModel):
             raise ValueError("Maximum relay hop count exceeded")
         if self.ttl_seconds > settings.SOS_TTL_SECONDS:
             raise ValueError("TTL exceeds server limit")
-        if self.message_type != MessageType.SOS_ALERT:
+        if self.message_type not in (MessageType.SOS_ALERT, MessageType.SOS_CANCEL):
             raise ValueError("Use the cancellation endpoint for cancellations")
         if self.client_timestamp.tzinfo is None:
             raise ValueError("client_timestamp must include a timezone")

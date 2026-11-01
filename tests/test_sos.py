@@ -185,3 +185,37 @@ async def test_locationless_sos_is_persisted_and_broadcast_without_fake_coordina
     assert await service.get_active_sos_events(db, 12, 77, 100) == []
     assert (await service.process_sos(db, payload, ws)).is_duplicate
     assert (await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id='owner'), ws)).success
+
+@pytest.mark.asyncio
+async def test_location_revisions_preserve_status_and_ignore_late_updates(db, payload):
+    payload.origin_device_id = 'device-a'
+    await service.process_sos(db, payload, AsyncMock())
+    await service.respond_to_sos(db, payload.sos_id, 'helper', AsyncMock())
+    update = payload.model_copy(deep=True)
+    update.revision = 2
+    update.location.lat = 13
+    await service.process_sos(db, update, AsyncMock())
+    event = (await db.execute(select(SOSEvent))).scalar_one()
+    assert event.latitude == 13 and event.revision == 2
+    assert event.status == 'RESPONDING' and event.responders_en_route == 1
+    assert (await service.process_sos(db, payload, AsyncMock())).is_duplicate
+    assert event.latitude == 13
+    update.revision = 3
+    update.location = None
+    await service.process_sos(db, update, AsyncMock())
+    assert event.latitude == 13
+    await service.cancel_sos(db, SOSCancelRequest(sos_id=payload.sos_id, user_id='owner'), AsyncMock())
+    update.revision = 4
+    with pytest.raises(HTTPException) as error:
+        await service.process_sos(db, update, AsyncMock())
+    assert error.value.status_code == 410
+
+@pytest.mark.asyncio
+async def test_revision_cannot_be_written_by_another_device(db, payload):
+    payload.origin_device_id = 'device-a'
+    await service.process_sos(db, payload, AsyncMock())
+    payload.revision = 1
+    payload.origin_device_id = 'device-b'
+    with pytest.raises(HTTPException) as error:
+        await service.process_sos(db, payload, AsyncMock())
+    assert error.value.status_code == 403

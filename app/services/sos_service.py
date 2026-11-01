@@ -58,6 +58,10 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     tombstone = await db.get(SOSCancellationRecord, (sos_data.sos_id, sos_data.user_id))
     if tombstone:
         raise HTTPException(410, "SOS has been cancelled")
+    timestamp = sos_data.client_timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+    age = (datetime.now(timezone.utc).replace(tzinfo=None) - timestamp).total_seconds()
+    if age >= sos_data.ttl_seconds or age < -300:
+        raise HTTPException(422, "SOS timestamp is expired or too far in the future")
     # 1. Deduplication check
     stmt = select(SOSEvent).where(SOSEvent.sos_id == sos_data.sos_id)
     result = await db.execute(stmt)
@@ -66,6 +70,26 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     if existing_sos:
         if existing_sos.user_id != sos_data.user_id:
             raise HTTPException(409, "SOS ID belongs to another user")
+        if sos_data.revision > existing_sos.revision:
+            if existing_sos.origin_device_id != sos_data.origin_device_id:
+                raise HTTPException(403, 'Only the originating device may update this SOS')
+            if existing_sos.status not in {SOSStatus.ACTIVE.value, SOSStatus.ACKNOWLEDGED.value, SOSStatus.RESPONDING.value}:
+                raise HTTPException(410, 'SOS is no longer active')
+            existing_sos.revision = sos_data.revision
+            existing_sos.client_timestamp = timestamp
+            existing_sos.ttl_seconds = sos_data.ttl_seconds
+            # A failed fix must not erase the last usable coordinates.
+            if sos_data.location:
+                existing_sos.latitude = sos_data.location.lat
+                existing_sos.longitude = sos_data.location.lng
+                existing_sos.altitude = sos_data.location.altitude
+                existing_sos.location_accuracy = sos_data.location.accuracy
+                existing_sos.location_provider = sos_data.location.provider
+            await stage_broadcast(db, existing_sos, 'sos_update')
+            await db.commit()
+            await db.refresh(existing_sos)
+            await notify_local(ws_manager, WebSocketSOSMessage(type='sos_update', data=_convert_to_response(existing_sos)))
+            return SOSResponse(success=True, sos_id=sos_data.sos_id, message='SOS location updated')
         return SOSResponse(
             success=True,
             sos_id=sos_data.sos_id,
@@ -81,6 +105,7 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
     # Create new SOS record
     new_sos = SOSEvent(
         sos_id=sos_data.sos_id,
+        revision=sos_data.revision,
         user_id=sos_data.user_id,
         user_name=sos_data.user_name,
         user_phone=sos_data.user_phone,

@@ -201,3 +201,22 @@ Reconnect A: retry must use the same ID without duplicates. Verify cancellation 
 Repeat with Bluetooth disabled/permission denied: report queued, never confirmed delivery.
 Already-installed older apps require an update to recognize null-location BLE packets.
 Device enrollment and a still-valid certificate remain required for authenticated offline relay.
+
+## Signed active SOS revisions (protocol 2)
+
+Apply migration 007 with `python -m alembic upgrade head` before starting the new
+backend. POST /api/v1/sos accepts signed protocol_version=2 alerts with increasing
+revision numbers. A newer revision updates location and freshness on the same SOS
+record, preserving responder state. Equal/older revisions are idempotent. A missing
+fix preserves previous usable coordinates. Updates require the original device.
+
+POST /api/v1/sos/mesh-cancel accepts an enrolled device's signed SOS_CANCEL packet
+through an authenticated relay account. It persists the existing cancellation
+tombstone even if the original alert has not yet arrived. Legacy unsigned direct
+cancellation remains owner-only. Message type, protocol version, revision and help
+request flag are bound by the signature; stripping version 2 is rejected.
+
+Deploy this backend together with the matching protocol 2 mobile build. Helpers'
+consented five-minute location snapshots travel over BLE to the requesting phone;
+they are not persisted as backend SOS events. Physical-phone verification is still
+required; see the mobile repository's RELAY_TESTING.md.

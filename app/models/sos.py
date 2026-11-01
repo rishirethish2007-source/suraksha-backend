@@ -5,7 +5,7 @@ import enum
 import uuid
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, Text, DateTime, ForeignKey, func, Index, JSON
+from sqlalchemy import String, Integer, BigInteger, Float, Text, DateTime, ForeignKey, func, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.database import Base
 
@@ -46,6 +46,7 @@ class SOSEvent(Base):
     Model representing an SOS event.
     """
     __tablename__ = 'sos_events'
+    revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default='0', nullable=False)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     sos_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)

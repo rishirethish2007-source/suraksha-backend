@@ -65,3 +65,31 @@ def test_valid_locationless_signed_origin(monkeypatch):
                                     location={'lat':0,'lng':0}, client_timestamp=stamp).location
     with pytest.raises(HTTPException):
         verify_origin(proof, event)
+
+def test_legacy_signature_cannot_authorize_cancel_or_revision(signed):
+    from app.models.sos import MessageType
+    signed.message_type = MessageType.SOS_CANCEL
+    with pytest.raises(HTTPException): verify_origin(signed.origin_proof, signed)
+    signed.message_type = MessageType.SOS_ALERT
+    signed.revision = 1
+    with pytest.raises(HTTPException): verify_origin(signed.origin_proof, signed)
+
+
+def test_v2_signed_control_binds_type_revision_and_consent(monkeypatch):
+    from app.api.sos import mesh_cancel
+    ca = ec.generate_private_key(ec.SECP256R1())
+    monkeypatch.setattr(settings, 'DEVICE_CA_PRIVATE_KEY', ca.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode())
+    key = ec.generate_private_key(ec.SECP256R1())
+    certificate = enroll(DeviceEnrollment(device_id='a', public_key=key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint).hex()), {'sub':'owner'})['certificate']
+    stamp = datetime.now(timezone.utc).isoformat()
+    fields = dict(protocol_version=2, message_type='SOS_CANCEL', revision=4, helper_requested=False,
+        target_sos_id='', target_device_id='', sos_id='cancel', user_id='owner', user_name='Owner',
+        user_phone='', sos_type='MEDICAL', lat=None, lng=None, timestamp=stamp, origin_device_id='a', ttl_seconds=3600, max_hops=15, message='')
+    raw = json.dumps(fields)
+    r,s = utils.decode_dss_signature(key.sign(raw.encode(), ec.ECDSA(hashes.SHA256())))
+    proof = OriginProof(certificate=certificate, signed_payload=raw, signature=(r.to_bytes(32,'big')+s.to_bytes(32,'big')).hex())
+    event = SOSCreateRequest(protocol_version=2, revision=4, message_type='SOS_CANCEL', sos_id='cancel', user_id='owner', user_name='Owner', sos_type='MEDICAL', client_timestamp=stamp, origin_device_id='a', origin_proof=proof)
+    verify_origin(proof, event)
+    for field, value in [('revision', 5), ('helper_requested', True), ('protocol_version', None)]:
+        changed = event.model_copy(update={field:value})
+        with pytest.raises(HTTPException): verify_origin(proof, changed)

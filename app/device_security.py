@@ -66,6 +66,13 @@ def verify_origin(proof: OriginProof, event):
             "lat": event.location.lat if event.location else None, "lng": event.location.lng if event.location else None,
             "origin_device_id": event.origin_device_id, "ttl_seconds": event.ttl_seconds,
             "max_hops": event.max_hops, "message": event.message or ""}
+        if signed.get('protocol_version') != event.protocol_version:
+            raise ValueError('Protocol version mismatch')
+        if event.protocol_version == 2:
+            expected.update(protocol_version=2, message_type=event.message_type.value, revision=event.revision,
+                            helper_requested=event.helper_requested, target_sos_id='', target_device_id='')
+        elif event.message_type.value != 'SOS_ALERT' or event.revision != 0:
+            raise ValueError('Control messages require protocol version 2')
         if any(signed.get(key) != value for key, value in expected.items()):
             raise ValueError("Signed fields do not match the submitted alert")
         timestamp = datetime.fromisoformat(signed["timestamp"].replace("Z", "+00:00"))
