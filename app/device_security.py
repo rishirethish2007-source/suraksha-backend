@@ -79,12 +79,16 @@ def verify_origin(proof: OriginProof, event):
                 for name, value in [('helper_request_expires_at', event.helper_request_expires_at),
                                     ('location_captured_at', event.location.captured_at if event.location else None)]:
                     raw_value = signed.get(name)
+                    if raw_value is not None and not isinstance(raw_value, str):
+                        raise ValueError('Signed timestamps must be strings')
                     if (datetime.fromisoformat(raw_value.replace('Z', '+00:00')) if raw_value else None) != value:
                         raise ValueError('Signed timestamp mismatch')
         elif event.message_type.value != 'SOS_ALERT' or event.revision != 0:
             raise ValueError('Control messages require protocol version 2')
         if any(signed.get(key) != value for key, value in expected.items()):
             raise ValueError("Signed fields do not match the submitted alert")
+        if not isinstance(signed["timestamp"], str):
+            raise ValueError('Signed timestamps must be strings')
         timestamp = datetime.fromisoformat(signed["timestamp"].replace("Z", "+00:00"))
         if timestamp != event.client_timestamp or claims["sub"] != event.user_id or claims["device_id"] != event.origin_device_id:
             raise ValueError("Origin identity or timestamp mismatch")

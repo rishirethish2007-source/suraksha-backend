@@ -126,6 +126,10 @@ def test_v3_binds_capture_time_accuracy_and_request_identity(monkeypatch):
     changed = event.model_copy(deep=True)
     changed.location.accuracy = 1
     with pytest.raises(HTTPException): verify_origin(proof, changed)
+    for field in ('helper_request_expires_at', 'location_captured_at', 'timestamp'):
+        malformed = proof.model_copy(update={'signed_payload': json.dumps({**fields, field: {'invalid': 'timestamp'}})})
+        with pytest.raises(HTTPException) as error: verify_origin(malformed, event)
+        assert error.value.status_code == 403
 
 
 def test_server_receipts_are_signed_and_bound_to_target_revision(signed):
