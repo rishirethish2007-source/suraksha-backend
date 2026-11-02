@@ -2,8 +2,8 @@
 FastAPI router for SOS endpoints.
 """
 from typing import List
-import time
 import asyncio
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,36 +20,9 @@ from app.auth import validate_token, require_subject, require_responder
 
 router = APIRouter(prefix="/api/v1/sos", tags=["SOS"])
 
-# Simple in-memory rate limiting dictionary: { user_id: [timestamps] }
-_rate_limits = {}
-
-async def check_rate_limit(user_id: str):
-    """
-    Checks if the user has exceeded the maximum allowed SOS events per minute.
-    """
-    if settings.REDIS_ENABLED:
-        from app.realtime import redis_client
-        try:
-            count = await redis_client.eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],60) end; return n", 1, f"sos:limit:{user_id}")
-        except Exception:
-            raise HTTPException(503, "Rate limiter unavailable; retry shortly") from None
-        if count > settings.SOS_RATE_LIMIT_PER_MINUTE:
-            raise HTTPException(429, "Rate limit exceeded. Try again later.")
-        return
-    now = time.monotonic()
-    for key in list(_rate_limits):
-        if not _rate_limits[key] or now - _rate_limits[key][-1] >= 60:
-            del _rate_limits[key]
-    if user_id not in _rate_limits:
-        _rate_limits[user_id] = []
-        
-    # Remove older entries beyond 1 minute
-    _rate_limits[user_id] = [t for t in _rate_limits[user_id] if now - t < 60]
-    
-    if len(_rate_limits[user_id]) >= settings.SOS_RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-        
-    _rate_limits[user_id].append(now)
+# Compatibility export for existing test fixtures.
+from app.services.rate_limit import _windows as _rate_limits
+from app.services.receipts import server_receipt
 
 @router.post("", response_model=SOSResponse)
 async def create_sos(
@@ -60,17 +33,43 @@ async def create_sos(
     """
     Submit a new SOS alert.
     """
-    if sos_data.hop_count == 0:
+    if sos_data.message_type.value != 'SOS_ALERT':
+        raise HTTPException(422, 'Use /sos/mesh-cancel for signed cancellation')
+    if (sos_data.revision or sos_data.protocol_version == 3) and not sos_data.origin_proof:
+        raise HTTPException(403, 'Version 3 alerts and location updates require a signed origin proof')
+    relayed = sos_data.hop_count > 0 or sos_data.delivery_method.value == "BLE_RELAY"
+    if not relayed:
         require_subject(claims, sos_data.user_id)
     else:
         if not sos_data.origin_proof:
             raise HTTPException(403, "Relayed alerts require a signed origin proof")
         verify_origin(sos_data.origin_proof, sos_data)
-    if sos_data.hop_count == 0 and sos_data.origin_proof:
+    if not relayed and sos_data.origin_proof:
         verify_origin(sos_data.origin_proof, sos_data)
-    await check_rate_limit(claims["sub"])
+    try:
+        response = await sos_service.process_sos(db, sos_data, ws_manager, actor_id=claims["sub"])
+    except HTTPException as error:
+        if error.status_code == 410 and error.detail == "SOS has been cancelled":
+            raise HTTPException(410, {"message": error.detail, "receipt": server_receipt(sos_data, 'cancelled')}) from None
+        raise
+    response.receipt = server_receipt(sos_data, 'accepted')
+    return response
 
-    return await sos_service.process_sos(db, sos_data, ws_manager)
+
+@router.post('/mesh-cancel', response_model=SOSResponse)
+async def mesh_cancel(sos_data: SOSCreateRequest, db: AsyncSession = Depends(get_db),
+                      claims: dict = Depends(validate_token)):
+    if sos_data.protocol_version not in (2, 3) or sos_data.message_type.value != 'SOS_CANCEL' or not sos_data.origin_proof:
+        raise HTTPException(403, 'Cancellation requires a signed version 2 control message')
+    verify_origin(sos_data.origin_proof, sos_data)
+    from datetime import datetime, timezone
+    age = (datetime.now(timezone.utc) - sos_data.client_timestamp).total_seconds()
+    if age < -300 or age >= sos_data.ttl_seconds:
+        raise HTTPException(422, 'Expired cancellation')
+    response = await sos_service.cancel_sos(db, SOSCancelRequest(sos_id=sos_data.sos_id,
+        user_id=sos_data.user_id, reason=sos_data.message), ws_manager)
+    response.receipt = server_receipt(sos_data, 'cancelled')
+    return response
 
 
 @router.post("/cancel", response_model=SOSResponse)

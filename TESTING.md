@@ -158,7 +158,7 @@ configurations continue using organisation sign-in instead of this local issuer.
    account**, supply a unique email, password of 12–128 characters, name and phone.
    Each person uses their own account. Email is a login identifier, not verified.
 4. Close/reopen the app, then test again after 15 minutes: access renews automatically.
-   Device certificates renew on SOS generation when nearing expiry and online.
+   Device certificates renew during ordinary app/background work when nearing expiry and online; renewal does not block the SOS button.
 5. Change the laptop IP and repeat step 2. The same backend CA preserves sign-in.
    An unrelated CA is rejected to prevent accidentally sending credentials/queued
    alerts to another organisation. A genuinely different backend needs fresh app
@@ -193,7 +193,7 @@ old test tokens still expire after 24 hours.
 Deploy the backend first and run `alembic upgrade head` (migration 006 permits null coordinates).
 Install a rebuilt mobile app on two real phones signed in/enrolled while online.
 On phone A, disable Wi-Fi/mobile data and GPS; keep Bluetooth enabled.
-Trigger SOS: it must advertise over Bluetooth without asking for a GPS fix.
+Trigger SOS: initial dispatch must not wait for a GPS fix; acquisition runs in the background.
 Phone B with relay enabled should show the alert with location unavailable.
 With B offline it should rebroadcast; with B online it should upload the same SOS ID.
 The dashboard must show the alert without map/directions controls or a fabricated (0,0) pin.
@@ -201,3 +201,63 @@ Reconnect A: retry must use the same ID without duplicates. Verify cancellation 
 Repeat with Bluetooth disabled/permission denied: report queued, never confirmed delivery.
 Already-installed older apps require an update to recognize null-location BLE packets.
 Device enrollment and a still-valid certificate remain required for authenticated offline relay.
+
+## Signed active SOS revisions (protocol 2)
+
+Apply migration 007 with `python -m alembic upgrade head` before starting the new
+backend. POST /api/v1/sos accepts signed protocol_version=2 alerts with increasing
+revision numbers. A newer revision updates location and freshness on the same SOS
+record, preserving responder state. Equal/older revisions are idempotent. A missing
+fix preserves previous usable coordinates. Updates require the original device.
+
+POST /api/v1/sos/mesh-cancel accepts an enrolled device's signed SOS_CANCEL packet
+through an authenticated relay account. It persists the existing cancellation
+tombstone even if the original alert has not yet arrived. Legacy unsigned direct
+cancellation remains owner-only. Message type, protocol version, revision and help
+request flag are bound by the signature; stripping version 2 is rejected.
+
+Deploy this backend together with the matching protocol 2 mobile build. Helpers'
+consented five-minute location snapshots travel over BLE to the requesting phone;
+they are not persisted as backend SOS events. Physical-phone verification is still
+required; see the mobile repository's RELAY_TESTING.md.
+
+
+## Delivery receipts, helper requests and GPS age (protocol 3)
+
+Upgrade the backend first, using `python -m alembic upgrade head` (migration 008).
+Existing GPS coordinates have unknown capture time until a newer captured fix
+arrives; the migration does not invent timestamps. Preserve `.env` and its signing
+keys so already-enrolled phones retain trust. Install the new APK on all phones;
+the new app accepts legacy signed alerts, while old apps cannot relay protocol 3.
+
+Protocol 3 binds `location.captured_at`, accuracy, provider, helper request ID,
+expiry and state into the origin signature. Heartbeats update client_timestamp,
+while a missing GPS fix leaves location_captured_at unchanged. An older sensor
+capture cannot overwrite a newer known capture. Fields not bound by legacy
+signatures are not treated as authenticated protocol 3 metadata.
+
+Successful alert and mesh-cancel responses include `receipt`: an ES256 JWT with
+issuer `suraksha-device-ca`, audience `suraksha-receipt`, one-hour expiry, and a
+`packet` claim. The packet binds SOS ID, originating device/user, revision, and
+accepted/cancelled status. Mobile relays transport it as SOS_ACK without changing
+its signature. Device-signed first-hop receipts indicate only peer receipt. A
+signed server receipt is not a rescue dispatch confirmation. A cancelled SOS
+rejected with HTTP 410 also returns a signed cancellation receipt in detail.receipt.
+
+New events, updates and relays use separate per-minute budgets:
+
+- SOS_RATE_LIMIT_PER_MINUTE (default 5) counts new SOS IDs per origin user.
+- SOS_UPDATE_RATE_LIMIT_PER_MINUTE (default 60) counts direct new revisions.
+- SOS_RELAY_RATE_LIMIT_PER_MINUTE (default 240) counts accepted uploads per relay.
+
+Duplicate/equal or older revisions do not consume these submission budgets. Redis
+checks/increments all applicable budgets atomically; the local fallback is for a
+single-process development server. HTTP 429 includes Retry-After. Signed
+cancellations bypass alert submission quotas. Authenticated relay uploads at the
+maximum hop count remain allowed; the mobile receiver stops additional radio hops.
+
+Helper accepted/declined/withdrawn responses remain targeted BLE control packets,
+not new backend SOS rows. Each request has a unique ID and five-minute expiry;
+withdrawal/cancellation invalidates an in-progress GPS share. Consent snapshots are
+visible to intermediate peers as disclosed in the app. See the mobile repository's
+RELAY_TESTING.md for the three-phone acceptance matrix and known OS limitations.
