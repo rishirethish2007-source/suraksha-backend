@@ -87,7 +87,12 @@ async def process_sos(db: AsyncSession, sos_data: SOSCreateRequest, ws_manager: 
             existing_sos.ttl_seconds = sos_data.ttl_seconds
             # A failed fix must not erase the last usable coordinates.
             captured_at = sos_data.location.captured_at.astimezone(timezone.utc).replace(tzinfo=None) if sos_data.location and sos_data.location.captured_at else None
-            if sos_data.location and (not captured_at or not existing_sos.location_captured_at or captured_at >= existing_sos.location_captured_at):
+            old_capture = existing_sos.location_captured_at
+            same_fix_better_accuracy = (captured_at == old_capture and sos_data.location is not None and
+                (existing_sos.location_accuracy is None or sos_data.location.accuracy is not None and
+                 sos_data.location.accuracy <= existing_sos.location_accuracy))
+            if sos_data.location and (not old_capture or captured_at and
+                    (captured_at > old_capture or same_fix_better_accuracy)):
                 existing_sos.latitude = sos_data.location.lat
                 existing_sos.longitude = sos_data.location.lng
                 existing_sos.altitude = sos_data.location.altitude
